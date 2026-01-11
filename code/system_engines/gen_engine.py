@@ -12,16 +12,10 @@ except ImportError:
     StableDiffusionPipeline = None
     StableDiffusionXLPipeline = None
 
-try:
-    import webuiapi
-except ImportError:
-    webuiapi = None
-
-
 class VisualGenerator:
     """
     System B: Visual Generator (Diffusion + Adapters).
-    Supports a local diffusers pipeline or external backends.
+    Supports a local diffusers pipeline.
     """
 
     def __init__(
@@ -30,7 +24,6 @@ class VisualGenerator:
         model_id: Optional[str] = None,
         device: Optional[str] = None,
         dtype: str = "float16",
-        api_url: Optional[str] = None,
     ) -> None:
         self.backend = backend.lower()
         self.model_id = model_id or os.getenv("DIFFUSERS_MODEL_ID")
@@ -38,21 +31,13 @@ class VisualGenerator:
             "cuda" if torch and torch.cuda.is_available() else "cpu"
         )
         self.dtype = dtype or os.getenv("DIFFUSERS_DTYPE") or "float16"
-        self.api_url = api_url
 
         self.pipe = None
-        self.api = None
 
         if self.backend == "diffusers":
             self._init_diffusers()
-        elif self.backend == "webui":
-            self._init_webui()
-        elif self.backend == "comfyui":
-            raise NotImplementedError(
-                "ComfyUI backend is not wired yet. Use 'diffusers' or 'webui', or add a ComfyUI adapter."
-            )
         else:
-            raise ValueError(f"Unsupported backend: {self.backend}")
+            raise ValueError("Only the 'diffusers' backend is supported.")
 
     def _init_diffusers(self) -> None:
         if StableDiffusionPipeline is None or StableDiffusionXLPipeline is None or torch is None:
@@ -97,12 +82,6 @@ class VisualGenerator:
         if os.getenv("DIFFUSERS_CPU_OFFLOAD", "0") == "1":
             self.pipe.enable_model_cpu_offload()
 
-    def _init_webui(self) -> None:
-        if webuiapi is None:
-            raise ImportError("webuiapi not installed. Install with: pip install webuiapi")
-
-        self.api = webuiapi.WebUIApi(baseurl=self.api_url or "http://127.0.0.1:7860")
-
     def generate(
         self,
         prompt: str,
@@ -135,20 +114,7 @@ class VisualGenerator:
                 output_dir=output_dir,
             )
 
-        if self.backend == "webui":
-            return self._generate_webui(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                num_images=num_images,
-                width=width,
-                height=height,
-                steps=steps,
-                guidance_scale=guidance_scale,
-                seed=seed,
-                output_dir=output_dir,
-            )
-
-        raise ValueError(f"Unsupported backend: {self.backend}")
+        raise ValueError("Only the 'diffusers' backend is supported.")
 
     def _generate_diffusers(
         self,
@@ -178,39 +144,6 @@ class VisualGenerator:
             num_inference_steps=steps,
             guidance_scale=guidance_scale,
             generator=generator,
-        )
-
-        paths = []
-        for i, image in enumerate(result.images):
-            path = os.path.join(output_dir, f"image_{i + 1}.png")
-            image.save(path)
-            paths.append(path)
-        return paths
-
-    def _generate_webui(
-        self,
-        prompt: str,
-        negative_prompt: Optional[str],
-        num_images: int,
-        width: int,
-        height: int,
-        steps: int,
-        guidance_scale: float,
-        seed: Optional[int],
-        output_dir: str,
-    ) -> List[str]:
-        if self.api is None:
-            raise RuntimeError("WebUI API not initialized.")
-
-        result = self.api.txt2img(
-            prompt=prompt,
-            negative_prompt=negative_prompt or "",
-            steps=steps,
-            cfg_scale=guidance_scale,
-            width=width,
-            height=height,
-            seed=seed or -1,
-            batch_size=num_images,
         )
 
         paths = []
