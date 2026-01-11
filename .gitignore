@@ -1,0 +1,57 @@
+# Environment & Git Configuration
+.env
+.env.*
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE Settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Output Files
+outputs/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+
+# Model Weights (if storing locally)
+models/
+checkpoints/
+*.ckpt
+*.safetensors
+*.pth
+
+# Data (exclude large datasets)
+data/*.jpg
+data/*.png
+data/raw/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Local caches
+.cache/
+**/.cache/
+**/.venv/
+**/__pycache__/
+
+# Logs
+logs/
+*.log
