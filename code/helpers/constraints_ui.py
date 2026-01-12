@@ -25,17 +25,30 @@ if not _widgets_available:
         return None
 else:
     use_constraints = widgets.Checkbox(value=False, description="Enable constraints")
-    must_include = widgets.Textarea(description="Must include", placeholder="comma-separated")
-    avoid = widgets.Textarea(description="Avoid", placeholder="comma-separated")
-    style_bias = widgets.Textarea(description="Style bias", placeholder="comma-separated")
-    palette_bias = widgets.Textarea(description="Palette bias", placeholder="comma-separated")
-    locked_fields = widgets.Textarea(description="Locked fields (JSON)", placeholder='{"core_subject": "..."}')
-    extra_instructions = widgets.Textarea(description="Extra instructions", placeholder="optional")
-    extra_tokens = widgets.Textarea(description="Scene extra tokens", placeholder="comma-separated")
-    extra_negative = widgets.Textarea(description="Scene negative tokens", placeholder="comma-separated")
-    override_style_tokens = widgets.Textarea(description="Override style tokens", placeholder="comma-separated")
+    core_subject = widgets.Text(description="Core subject", placeholder="e.g., corporate AI platform", layout={"width": "420px"})
+    must_include = widgets.Textarea(description="Must include", placeholder="comma-separated", layout={"width": "420px"})
+    avoid = widgets.Textarea(description="Avoid", placeholder="comma-separated", layout={"width": "420px"})
+    style_bias = widgets.Textarea(description="Style bias", placeholder="comma-separated", layout={"width": "420px"})
+    palette_bias = widgets.Textarea(description="Palette bias", placeholder="comma-separated", layout={"width": "420px"})
+    locked_fields = widgets.Textarea(
+        description="Locked fields (JSON)",
+        placeholder='{"core_subject": "..."}',
+        layout={"width": "420px"},
+    )
+    extra_instructions = widgets.Textarea(
+        description="Extra instructions", placeholder="optional", layout={"width": "420px"}
+    )
+    extra_tokens = widgets.Textarea(
+        description="Scene extra tokens", placeholder="comma-separated", layout={"width": "420px"}
+    )
+    extra_negative = widgets.Textarea(
+        description="Scene negative tokens", placeholder="comma-separated", layout={"width": "420px"}
+    )
+    override_style_tokens = widgets.Textarea(
+        description="Override style tokens", placeholder="comma-separated", layout={"width": "420px"}
+    )
 
-    load_demo = widgets.Button(description="Load Demo Constraints", button_style="info")
+    load_demo = widgets.Button(description="Load Demo Constraints", button_style="info", layout={"width": "200px"})
 
     def _parse_csv(text):
         return [t.strip() for t in text.split(",") if t.strip()]
@@ -50,15 +63,16 @@ else:
 
     def _load_demo_constraints(_):
         use_constraints.value = True
-        must_include.value = "neon whiskers, katana, cybernetic armor"
-        avoid.value = "cartoonish, low-res, deformed"
-        style_bias.value = "Octane Render, Subsurface Scattering, high-contrast lighting"
-        palette_bias.value = "Electric Blue #03A9F4, Neon Pink #FF69B4, Metallic Silver #B1B1B1"
-        locked_fields.value = '{"core_subject": "Feline warrior with advanced cybernetic enhancements"}'
-        extra_instructions.value = "Keep the subject non-human and helmeted."
-        extra_tokens.value = "cinematic rim light, depth of field"
-        extra_negative.value = "blurry, wrong anatomy"
-        override_style_tokens.value = "Octane Render, Subsurface Scattering"
+        core_subject.value = "Enterprise AI platform identity mark"
+        must_include.value = "clean geometric mark, subtle gradient, balanced whitespace, premium feel"
+        avoid.value = "neon, grunge, cartoonish, overly playful, busy background"
+        style_bias.value = "minimalism, modern corporate, grid-aligned, sharp edges"
+        palette_bias.value = "Deep Navy #0A1F44, Slate #4C5A67, Cool Gray #D9DEE3, Accent Teal #2FB7A6"
+        locked_fields.value = '{"brand_vibe": "Trusted Precision"}'
+        extra_instructions.value = "Professional, enterprise-ready, calm tone."
+        extra_tokens.value = "clean layout, soft studio lighting"
+        extra_negative.value = "noisy, cluttered, distorted"
+        override_style_tokens.value = "minimalism, modern corporate"
 
     load_demo.on_click(_load_demo_constraints)
 
@@ -76,6 +90,9 @@ else:
             constraints["palette_bias"] = _parse_csv(palette_bias.value)
         if locked_fields.value.strip():
             constraints["locked_fields"] = _parse_locked_fields(locked_fields.value)
+        if core_subject.value.strip():
+            constraints.setdefault("locked_fields", {})
+            constraints["locked_fields"]["core_subject"] = core_subject.value.strip()
         if extra_instructions.value.strip():
             constraints["extra_instructions"] = extra_instructions.value.strip()
         return constraints or None
@@ -98,20 +115,11 @@ else:
         }
 
     def render_constraints_ui():
-        ui = widgets.VBox(
-            [
-                use_constraints,
-                load_demo,
-                must_include,
-                avoid,
-                style_bias,
-                palette_bias,
-                locked_fields,
-                extra_instructions,
-                extra_tokens,
-                extra_negative,
-                override_style_tokens,
-            ]
+        header = widgets.HBox([use_constraints, load_demo])
+        section_constraints = widgets.VBox(
+            [core_subject, must_include, avoid, style_bias, palette_bias, locked_fields, extra_instructions]
         )
+        section_scene = widgets.VBox([extra_tokens, extra_negative, override_style_tokens])
+        ui = widgets.VBox([header, section_constraints, section_scene])
         display(ui)
         return ui

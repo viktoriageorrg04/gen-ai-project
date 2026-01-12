@@ -1,9 +1,18 @@
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 def _normalize_tokens(items: List[str]) -> List[str]:
     return [re.sub(r"\s+", " ", t.strip().lower()) for t in items if t and t.strip()]
+
+
+def _tokenize(text: str) -> List[str]:
+    cleaned = re.sub(r"[^a-z0-9#]+", " ", text.lower())
+    return [t for t in cleaned.split() if t]
+
+
+def _token_set(text: str) -> set:
+    return set(_tokenize(text))
 
 
 def _extract_hexes(items: List[str]) -> List[str]:
@@ -30,7 +39,15 @@ def _coverage_score(required: List[str], corpus: List[str]) -> Optional[Dict]:
     if not required:
         return None
     corpus_text = " ".join(corpus)
-    hits = [token for token in required if token in corpus_text]
+    corpus_tokens = _token_set(corpus_text)
+    hits = []
+    for item in required:
+        item_tokens = _token_set(item)
+        if not item_tokens:
+            continue
+        overlap = item_tokens & corpus_tokens
+        if overlap and (len(overlap) / len(item_tokens)) >= 0.5:
+            hits.append(item)
     return {"required": required, "hits": hits, "ratio": len(hits) / len(required)}
 
 
@@ -41,6 +58,20 @@ def _jaccard(a: List[str], b: List[str]) -> Optional[float]:
     if not a_set or not b_set:
         return 0.0
     return len(a_set & b_set) / len(a_set | b_set)
+
+
+def _jaccard_tokens(a: List[str], b: List[str]) -> Optional[float]:
+    a_tokens = set()
+    b_tokens = set()
+    for item in a:
+        a_tokens |= _token_set(item)
+    for item in b:
+        b_tokens |= _token_set(item)
+    if not a_tokens and not b_tokens:
+        return None
+    if not a_tokens or not b_tokens:
+        return 0.0
+    return len(a_tokens & b_tokens) / len(a_tokens | b_tokens)
 
 
 def compute_constraint_scores(manifest: Dict, constraints: Dict) -> Dict:
@@ -56,7 +87,7 @@ def compute_constraint_scores(manifest: Dict, constraints: Dict) -> Dict:
     if violations is not None:
         avoid_compliance = 1 - violations["ratio"]
 
-    style_overlap = _jaccard(style_bias, manifest.get("art_style_tokens", []))
+    style_overlap = _jaccard_tokens(style_bias, manifest.get("art_style_tokens", []))
 
     manifest_palette = manifest.get("color_palette", [])
     bias_hex = _extract_hexes(palette_bias)
@@ -65,7 +96,7 @@ def compute_constraint_scores(manifest: Dict, constraints: Dict) -> Dict:
         palette_overlap = _jaccard(bias_hex, manifest_hex)
         palette_label = "Palette match (hex)"
     else:
-        palette_overlap = _jaccard(palette_bias, manifest_palette)
+        palette_overlap = _jaccard_tokens(palette_bias, manifest_palette)
         palette_label = "Palette Jaccard"
 
     return {

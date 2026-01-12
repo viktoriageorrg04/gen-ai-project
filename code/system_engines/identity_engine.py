@@ -128,6 +128,11 @@ Focus on invariant descriptors: traits that remain unchanged regardless of the c
             if missing_keys:
                 raise ValueError(f"LLM response missing required keys: {missing_keys}")
 
+            if constraints:
+                locked_fields = constraints.get("locked_fields", {})
+                for key, value in locked_fields.items():
+                    manifest[key] = value
+
             return manifest
 
         except json.JSONDecodeError as e:
