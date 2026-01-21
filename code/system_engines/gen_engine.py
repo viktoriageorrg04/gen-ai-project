@@ -7,10 +7,17 @@ except ImportError:
     torch = None
 
 try:
-    from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
+    from diffusers import (
+        StableDiffusionPipeline,
+        StableDiffusionXLPipeline,
+        StableDiffusionControlNetPipeline,
+        ControlNetModel,
+    )
 except ImportError:
     StableDiffusionPipeline = None
     StableDiffusionXLPipeline = None
+    StableDiffusionControlNetPipeline = None
+    ControlNetModel = None
 
 class VisualGenerator:
     """
@@ -33,6 +40,7 @@ class VisualGenerator:
         self.dtype = dtype or os.getenv("DIFFUSERS_DTYPE") or "float16"
 
         self.pipe = None
+        self.controlnet_pipe = None
 
         if self.backend == "diffusers":
             self._init_diffusers()
@@ -82,6 +90,57 @@ class VisualGenerator:
         if os.getenv("DIFFUSERS_CPU_OFFLOAD", "0") == "1":
             self.pipe.enable_model_cpu_offload()
 
+    def _init_controlnet_canny(self) -> None:
+        if (
+            StableDiffusionControlNetPipeline is None
+            or ControlNetModel is None
+            or torch is None
+        ):
+            raise ImportError(
+                "ControlNet deps missing. Install diffusers/torch and ensure ControlNetModel is available."
+            )
+
+        model_id = self.model_id or "runwayml/stable-diffusion-v1-5"
+        if "xl" in model_id.lower():
+            raise ValueError("ControlNet Canny is not wired for SDXL in this project.")
+
+        controlnet_id = os.getenv("CONTROLNET_MODEL_ID") or "lllyasviel/sd-controlnet-canny"
+        torch_dtype = torch.float16 if self.dtype == "float16" and self.device == "cuda" else torch.float32
+
+        controlnet = ControlNetModel.from_pretrained(controlnet_id, torch_dtype=torch_dtype)
+        self.controlnet_pipe = StableDiffusionControlNetPipeline.from_pretrained(
+            model_id,
+            controlnet=controlnet,
+            torch_dtype=torch_dtype,
+        )
+        self.controlnet_pipe.to(self.device)
+
+        if os.getenv("DIFFUSERS_ATTENTION_SLICING", "0") == "1":
+            self.controlnet_pipe.enable_attention_slicing()
+        if os.getenv("DIFFUSERS_VAE_SLICING", "0") == "1":
+            self.controlnet_pipe.enable_vae_slicing()
+        if os.getenv("DIFFUSERS_CPU_OFFLOAD", "0") == "1":
+            self.controlnet_pipe.enable_model_cpu_offload()
+
+    def _apply_loras(self, pipe, lora_paths: Optional[List]) -> None:
+        if not lora_paths:
+            return
+        for item in lora_paths:
+            if isinstance(item, dict):
+                path = item.get("path")
+                scale = item.get("scale", 0.8)
+            else:
+                path = item
+                scale = 0.8
+            if not path:
+                continue
+            adapter_name = os.path.splitext(os.path.basename(str(path)))[0]
+            pipe.load_lora_weights(path, adapter_name=adapter_name)
+            if hasattr(pipe, "set_adapters"):
+                pipe.set_adapters([adapter_name], adapter_weights=[scale])
+            elif hasattr(pipe, "fuse_lora"):
+                pipe.fuse_lora(lora_scale=scale)
+
     def generate(
         self,
         prompt: str,
@@ -112,6 +171,7 @@ class VisualGenerator:
                 guidance_scale=guidance_scale,
                 seed=seed,
                 output_dir=output_dir,
+                lora_paths=lora_paths,
             )
 
         raise ValueError("Only the 'diffusers' backend is supported.")
@@ -127,9 +187,12 @@ class VisualGenerator:
         guidance_scale: float,
         seed: Optional[int],
         output_dir: str,
+        lora_paths: Optional[List],
     ) -> List[str]:
         if self.pipe is None:
             raise RuntimeError("Diffusers pipeline not initialized.")
+
+        self._apply_loras(self.pipe, lora_paths)
 
         generator = None
         if seed is not None and torch is not None:
@@ -149,6 +212,72 @@ class VisualGenerator:
         paths = []
         for i, image in enumerate(result.images):
             path = os.path.join(output_dir, f"image_{i + 1}.png")
+            image.save(path)
+            paths.append(path)
+        return paths
+
+    def generate_controlnet_canny(
+        self,
+        prompt: str,
+        control_image_path: str,
+        negative_prompt: Optional[str] = None,
+        num_images: int = 1,
+        width: int = 512,
+        height: int = 512,
+        steps: int = 25,
+        guidance_scale: float = 7.0,
+        seed: Optional[int] = None,
+        lora_paths: Optional[List] = None,
+        output_dir: str = "outputs/images/controlnet",
+        canny_low: int = 100,
+        canny_high: int = 200,
+    ) -> List[str]:
+        """
+        Generate images using ControlNet Canny guidance.
+        """
+        if self.controlnet_pipe is None:
+            self._init_controlnet_canny()
+
+        if self.controlnet_pipe is None:
+            raise RuntimeError("ControlNet pipeline not initialized.")
+
+        try:
+            from PIL import Image
+            import cv2
+            import numpy as np
+        except ImportError as exc:
+            raise ImportError("PIL/OpenCV not installed. Install pillow and opencv-python.") from exc
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        image = Image.open(control_image_path).convert("RGB")
+        image = image.resize((width, height))
+        image_np = np.array(image)
+        edges = cv2.Canny(image_np, canny_low, canny_high)
+        edges = np.stack([edges] * 3, axis=-1)
+        control_image = Image.fromarray(edges)
+
+        self._apply_loras(self.controlnet_pipe, lora_paths)
+
+        generator = None
+        if seed is not None and torch is not None:
+            generator = torch.Generator(device=self.device).manual_seed(seed)
+
+        result = self.controlnet_pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            num_images_per_prompt=num_images,
+            image=control_image,
+            width=width,
+            height=height,
+            num_inference_steps=steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+        )
+
+        paths = []
+        for i, image in enumerate(result.images):
+            path = os.path.join(output_dir, f"controlnet_{i + 1}.png")
             image.save(path)
             paths.append(path)
         return paths

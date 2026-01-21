@@ -13,6 +13,9 @@ DIFFUSERS_VAE_SLICING=1
 DIFFUSERS_CPU_OFFLOAD=1
 DIFFUSERS_DEBUG=1
 
+# ControlNet
+CONTROLNET_MODEL_ID=lllyasviel/sd-controlnet-canny
+
 # Paths
 OUTPUT_DIR=outputs
 DATA_DIR=data

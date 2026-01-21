@@ -177,6 +177,120 @@ Focus on invariant descriptors: traits that remain unchanged regardless of the c
 
         return result
 
+    def refine_manifest(
+        self,
+        manifest: Dict,
+        feedback: str,
+        constraints: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
+        """
+        Refines an existing Identity Manifest using critic feedback.
+        Returns a full manifest object with the original schema.
+        """
+        system_prompt = """
+### ROLE
+You are a Brand Identity Specialist and Prompt Engineer for Generative AI.
+
+### GOAL
+Refine an existing 'Technical Visual Manifest' using the provided feedback.
+
+### INPUT
+- Existing manifest (JSON)
+- Feedback describing weaknesses or missing elements
+
+### OUTPUT REQUIREMENTS
+Return ONLY a valid JSON object and do not include markdown code blocks (```json).
+Preserve the schema and only adjust fields that improve alignment with the feedback.
+
+### SCHEMA
+{
+  "core_subject": "A concise, technical description of the main entity.",
+  "key_features": ["3-5 permanent, distinctive physical tokens"],
+  "color_palette": ["3-5 specific hex codes or artist-grade color names"],
+  "art_style_tokens": ["3-5 technical style keywords"],
+  "brand_vibe": "A 2-word emotional anchor",
+  "fixed_negative_prompt": "Tokens to prevent visual drift"
+}
+"""
+
+        constraints_text = ""
+        if constraints:
+            must_include = constraints.get("must_include", [])
+            avoid = constraints.get("avoid", [])
+            style_bias = constraints.get("style_bias", [])
+            palette_bias = constraints.get("palette_bias", [])
+            locked_fields = constraints.get("locked_fields", {})
+            extra_instructions = constraints.get("extra_instructions", "")
+
+            if any([must_include, avoid, style_bias, palette_bias, locked_fields, extra_instructions]):
+                lines = ["\n### USER CONSTRAINTS"]
+                if must_include:
+                    lines.append(f"- Must include: {', '.join(must_include)}")
+                if avoid:
+                    lines.append(f"- Avoid: {', '.join(avoid)}")
+                if style_bias:
+                    lines.append(f"- Style bias: {', '.join(style_bias)}")
+                if palette_bias:
+                    lines.append(f"- Palette bias: {', '.join(palette_bias)}")
+                if locked_fields:
+                    locked_json = json.dumps(locked_fields, ensure_ascii=True)
+                    lines.append(f"- Locked fields (use exact values): {locked_json}")
+                if extra_instructions:
+                    lines.append(f"- Extra: {extra_instructions}")
+                constraints_text = "\n".join(lines)
+
+        formatted_system_prompt = system_prompt + constraints_text
+
+        user_message = json.dumps(
+            {
+                "manifest": manifest,
+                "feedback": feedback,
+            },
+            ensure_ascii=True,
+        )
+
+        try:
+            response = requests.post(
+                f"{self.ollama_url}/api/chat",
+                json={
+                    "model": self.model_name,
+                    "messages": [
+                        {"role": "system", "content": formatted_system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                    "stream": False,
+                    "format": "json",
+                },
+                timeout=120,
+            )
+            response.raise_for_status()
+            manifest_text = response.json()["message"]["content"]
+
+            refined = json.loads(manifest_text)
+            required_keys = [
+                "core_subject",
+                "key_features",
+                "color_palette",
+                "art_style_tokens",
+                "brand_vibe",
+                "fixed_negative_prompt",
+            ]
+            missing_keys = [key for key in required_keys if key not in refined]
+            if missing_keys:
+                raise ValueError(f"LLM response missing required keys: {missing_keys}")
+
+            if constraints:
+                locked_fields = constraints.get("locked_fields", {})
+                for key, value in locked_fields.items():
+                    refined[key] = value
+
+            return refined
+
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LLM did not return valid JSON. Response: {manifest_text[:200]}...") from e
+        except Exception as e:
+            raise RuntimeError(f"Error refining manifest with Ollama: {str(e)}") from e
+
     def save_manifest(self, manifest: Dict, filepath: str) -> None:
         """
         Saves an Identity Manifest to a JSON file.
