@@ -184,6 +184,59 @@ class QualityCritic:
     ) -> List[Dict]:
         return [self.score_image(path, manifest, prompt_override=prompt_override) for path in image_paths]
 
+    def generate_feedback(
+        self,
+        score_data: Dict,
+        manifest: Dict,
+        threshold: float = 0.7,
+    ) -> str:
+        scores = score_data.get("scores", {})
+        details = score_data.get("details", {})
+        feedback_parts = []
+
+        feature_sim = scores.get("feature_similarity")
+        if feature_sim is not None and feature_sim < threshold:
+            feature_details = details.get("features", {})
+            weak_features = []
+            if feature_details and "items" in feature_details and "scores" in feature_details:
+                for item, score in zip(feature_details["items"], feature_details["scores"]):
+                    if score < threshold:
+                        weak_features.append(f"'{item}' (score: {score:.2f})")
+            if weak_features:
+                feedback_parts.append(f"Weak key_features that need strengthening: {', '.join(weak_features)}. Make these more visually distinctive and specific.")
+            else:
+                feedback_parts.append(f"Feature alignment is low ({feature_sim:.2f}). Make key_features more specific and visually distinctive.")
+
+        style_sim = scores.get("style_similarity")
+        if style_sim is not None and style_sim < threshold:
+            style_details = details.get("styles", {})
+            weak_styles = []
+            if style_details and "items" in style_details and "scores" in style_details:
+                for item, score in zip(style_details["items"], style_details["scores"]):
+                    if score < threshold:
+                        weak_styles.append(f"'{item}' (score: {score:.2f})")
+            if weak_styles:
+                feedback_parts.append(f"Weak art_style_tokens: {', '.join(weak_styles)}. Use more specific, diffusion-friendly style tokens.")
+            else:
+                feedback_parts.append(f"Style alignment is low ({style_sim:.2f}). Use more specific rendering/style tokens.")
+
+        palette_sim = scores.get("palette_similarity")
+        if palette_sim is not None and palette_sim < threshold:
+            feedback_parts.append(f"Color palette alignment is low ({palette_sim:.2f}). Use more specific color names or hex codes that translate well to images.")
+
+        negative_sim = scores.get("negative_similarity")
+        if negative_sim is not None and negative_sim > 0.5:
+            feedback_parts.append(f"Unwanted elements detected (negative score: {negative_sim:.2f}). Strengthen fixed_negative_prompt to exclude these elements more explicitly.")
+
+        if not feedback_parts:
+            final_score = scores.get("final_score", 0)
+            if final_score >= 0.8:
+                return "The manifest is performing well. Minor refinements: consider adding more specific visual tokens to key_features for even better consistency."
+            else:
+                return "General improvement needed: make all visual descriptors more specific and technically precise for diffusion models."
+
+        return " ".join(feedback_parts)
+
 
 def _basic_clip_smoke_test() -> None:
     critic = QualityCritic()

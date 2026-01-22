@@ -14,4 +14,5 @@ torch==2.5.1+cu121
 safetensors>=0.4.0
 huggingface_hub[hf_xet]>=0.36.0
 hf_xet>=1.2.0
+gradio>=4.0.0
 --extra-index-url https://download.pytorch.org/whl/cu121

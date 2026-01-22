@@ -151,20 +151,46 @@ Focus on invariant descriptors: traits that remain unchanged regardless of the c
     ) -> Dict[str, str]:
         """
         Combines the Identity Manifest with a specific user scenario to create the final prompt for System B.
+        
+        NOTE: CLIP can only handle 77 tokens. We prioritize:
+        1. Core subject (most important)
+        2. Scene/scenario
+        3. Key features (top 2-3)
+        4. Style tokens
+        Filler words are minimized.
         """
-        # join the list of tokens into a string for the diffusion model
-        features = ", ".join(manifest.get("key_features", []))
-        colors = ", ".join(manifest.get("color_palette", []))
-        style_tokens = override_style_tokens or manifest.get("art_style_tokens", [])
-        style = ", ".join(style_tokens)
-        brand_vibe = manifest.get("brand_vibe", "")
-        extra = ", ".join(extra_tokens or [])
-        prompt = (
-            f"{style} portrait of {manifest['core_subject']}, "
-            f"{features}, color scheme: {colors}. "
-            f"Brand vibe: {brand_vibe}. Scene: {scenario}. "
-            f"Additional constraints: {extra}. High resolution, consistent lighting, professional quality."
-        )
+        # Get manifest fields with safe defaults
+        core_subject = manifest.get("core_subject", "")
+        key_features = manifest.get("key_features", [])[:3]  # Limit to top 3
+        style_tokens = override_style_tokens or manifest.get("art_style_tokens", [])[:2]  # Limit to top 2
+        
+        # Build concise prompt - subject and scene first (most important)
+        parts = []
+        
+        # Core subject is the priority
+        if core_subject:
+            parts.append(core_subject)
+        
+        # Scene context
+        if scenario and scenario.strip():
+            parts.append(scenario.strip())
+        
+        # Top features (limited to avoid truncation)
+        if key_features:
+            parts.append(", ".join(key_features))
+        
+        # Style tokens at the end
+        if style_tokens:
+            parts.append(", ".join(style_tokens))
+        
+        # Add quality tokens
+        parts.append("high quality, detailed")
+        
+        # Extra tokens if provided
+        if extra_tokens:
+            parts.append(", ".join(extra_tokens))
+        
+        prompt = ", ".join(parts)
 
         result = {"prompt": prompt}
         if include_negative:
@@ -241,13 +267,15 @@ Preserve the schema and only adjust fields that improve alignment with the feedb
 
         formatted_system_prompt = system_prompt + constraints_text
 
-        user_message = json.dumps(
-            {
-                "manifest": manifest,
-                "feedback": feedback,
-            },
-            ensure_ascii=True,
-        )
+        user_message = f"""
+Existing Manifest:
+{json.dumps(manifest, indent=2)}
+
+Critic Feedback:
+{feedback}
+
+Please refine the manifest to address the feedback while maintaining the JSON schema.
+"""
 
         try:
             response = requests.post(
