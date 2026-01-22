@@ -25,10 +25,11 @@ load_dotenv()
 _identity_engine = None
 _visual_generator = None
 _quality_critic = None
+_auto_loop = None
 
 
+# Handlers
 def get_identity_engine():
-    """Lazy-load the Identity Definer (System A)."""
     global _identity_engine
     if _identity_engine is None:
         from system_engines.identity_engine import IdentityDefiner
@@ -36,28 +37,30 @@ def get_identity_engine():
         _identity_engine = IdentityDefiner(ollama_url=ollama_url)
     return _identity_engine
 
-
 def get_visual_generator():
-    """Lazy-load the Visual Generator (System B)."""
     global _visual_generator
     if _visual_generator is None:
         from system_engines.gen_engine import VisualGenerator
         _visual_generator = VisualGenerator(backend="diffusers")
     return _visual_generator
 
-
 def get_quality_critic():
-    """Lazy-load the Quality Critic (System C)."""
     global _quality_critic
     if _quality_critic is None:
         from system_engines.critic_engine import QualityCritic
         _quality_critic = QualityCritic()
     return _quality_critic
 
-
-# ============================================================================
-# Handler Functions
-# ============================================================================
+def get_auto_loop():
+    global _auto_loop
+    if _auto_loop is None:
+        from helpers.agent_loop import AutoLoop
+        _auto_loop = AutoLoop(
+            identity_engine=get_identity_engine(),
+            visual_generator=get_visual_generator(),
+            quality_critic=get_quality_critic()
+        )
+    return _auto_loop
 
 def generate_manifest(
     concept: str,
@@ -67,7 +70,7 @@ def generate_manifest(
     palette_bias: str,
 ) -> Dict:
     """
-    System A: Generate an identity manifest from a brand concept.
+    Generate an identity manifest from a brand concept.
     
     Returns:
         The manifest dict (or empty dict on error)
@@ -122,7 +125,7 @@ def generate_images(
     seed: int,
 ) -> List[str]:
     """
-    System B: Generate images from manifest + scene description.
+    Generate images from manifest + scene description.
     
     Returns:
         List of image paths (or empty list on error)
@@ -192,7 +195,7 @@ def score_images(
     gallery_data: List
 ) -> Dict:
     """
-    System C: Score images against the identity manifest.
+    Score images against the identity manifest.
     
     Returns:
         Scores dict (or empty dict on error)
@@ -297,188 +300,206 @@ def refine_manifest_from_scores(
         return {}, ""
 
 
-# ============================================================================
-# Gradio UI Layout
-# ============================================================================
 
-def create_app() -> gr.Blocks:
-    """Create and return the Gradio application."""
+def run_autonomous_loop(
+    manifest_json: Dict,
+    scene: str,
+    target_score: float,
+    max_iterations: int,
+    resolution: str,
+    steps: int,
+    guidance_scale: float,
+    seed: int,
+    progress=gr.Progress()
+):
+    """
+    Run the autonomous agent loop with progressive updates.
+    """
+    if not manifest_json:
+        gr.Warning("⚠️ Please generate a manifest first (Step 1).")
+        yield [], "No manifest", {}
+        return
     
-    with gr.Blocks(
-        theme=gr.themes.Soft(),
-        title="Brand Identity Tool",
-        css="""
-            .step-header { font-size: 1.2em; font-weight: bold; margin-bottom: 0.5em; }
-            .status-box { padding: 10px; border-radius: 5px; margin-top: 10px; }
-        """
-    ) as app:
+    if not scene or not scene.strip():
+        gr.Warning("⚠️ Please enter a scene description.")
+        yield [], "No scene", {}
+        return
+
+    try:
+        width, height = map(int, resolution.split("x"))
+    except:
+        width, height = 512, 512
+
+    try:
+        controller = get_auto_loop()
+    except Exception as e:
+        gr.Warning(f"❌ Failed to initialize agents: {str(e)}")
+        yield [], f"Error: {str(e)}", {}
+        return
+    
+    gr.Info("🤖 Autonomous Loop Started!")
+    
+    # Process generator
+    max_iter = int(max_iterations)
+    progress(0, desc="Starting Agents...")
+    
+    for status, history, current_manifest in controller.run_loop(
+        initial_manifest=manifest_json,
+        scene=scene,
+        target_score=float(target_score),
+        max_iterations=max_iter,
+        width=width,
+        height=height,
+        steps=int(steps),
+        guidance_scale=float(guidance_scale),
+        seed=int(seed)
+    ):
+        # Determine current iteration from history
+        current_iter = 0
+        if history:
+            current_iter = history[-1]["iter"]
         
-        # Header
-        gr.Markdown("""
-        # 🎨 Brand Identity Creative Support Tool
+        # Update progress bar
+        progress(current_iter / max_iter, desc=f"Iteration {current_iter}/{max_iter}: {status[:30]}...")
+
+        # Build UI updates from history
+        gallery_items = []
+        log_text = []
         
-        Generate **consistent visuals** for your brand character, mascot, logo subject, or product design.
+        for item in history:
+            iter_num = item["iter"]
+            score = item.get("score", 0.0)
+            img_path = item.get("image")
+            
+            # Add to logs
+            log_text.append(f"--- Iteration {iter_num} ---")
+            log_text.extend(item.get("logs", []))
+            log_text.append("")
+            
+            # Add to gallery
+            if img_path:
+                label = f"Iter {iter_num} (Score: {score:.3f})"
+                # Gradio Gallery expects list of (path, label) or just path
+                gallery_items.append((img_path, label))
+
+        full_log = "\n".join(log_text)
         
-        **How it works (Multi-Agent Loop):**
-        1. **Describe** a visual subject → LLM creates identity manifest
-        2. **Generate** images of that subject in scenes → Diffusion creates visuals
-        3. **Score** alignment against the manifest → CLIP evaluates consistency
-        4. **Refine** the manifest based on scores → LLM improves, loop back to Step 2
-        """)
+        # Append current status to log for visibility
+        full_log += f"\n[STATUS]: {status}"
         
-        # Shared state for manifest and images
+        # Yield progressive update
+        yield gallery_items, full_log, current_manifest
+
+    if "Success" in status:
+        gr.Info(status)
+    else:
+        gr.Warning(status)
+
+
+# Layout
+def create_app() -> gr.Blocks:
+    with gr.Blocks(theme=gr.themes.Soft(), title="Brand Identity Tool") as app:
+        
+        gr.Markdown("# Brand Identity Creative Support Tool")
+        
         manifest_state = gr.State({})
-        
-        # ====================================================================
-        # STEP 1: Define Identity
-        # ====================================================================
-        with gr.Accordion("📋 Step 1: Define Your Visual Subject", open=True):
-            gr.Markdown("*Describe a character, mascot, or visual entity. The AI will create a detailed 'identity manifest' defining its features, colors, and style.*")
+
+        # Step 1
+        with gr.Accordion("Step 1: Define Subject", open=True):
+            gr.Markdown("*Describe a character, mascot, or visual entity.*")
             
             concept_input = gr.Textbox(
                 label="Visual Subject",
-                placeholder="e.g., A futuristic samurai cat with glowing blue eyes",
-                lines=2,
-                info="Describe what you want to draw: a character, mascot, logo subject, or product.",
+                placeholder="e.g., A futuristic samurai cat",
+                lines=2
             )
             
             with gr.Row():
                 gr.Examples(
                     examples=[
-                        ["A robotic owl with brass gears and glowing amber eyes"],
-                        ["A sleek electric sports car with cyan LED accents"],
-                        ["A friendly coffee cup mascot with steam swirls"],
+                        ["A robotic owl with brass gears"],
+                        ["A sleek electric sports car"],
                     ],
                     inputs=concept_input,
-                    label="Example Subjects",
+                    label="Examples",
                 )
             
-            with gr.Accordion("🎛️ Advanced Constraints (optional)", open=False):
-                gr.Markdown("*Steer the manifest generation with constraints:*")
+            with gr.Accordion("Advanced Constraints", open=False):
+                with gr.Row():
+                    must_include_input = gr.Textbox(label="Must Include", placeholder="comma-separated")
+                    avoid_input = gr.Textbox(label="Avoid", placeholder="comma-separated")
                 
                 with gr.Row():
-                    must_include_input = gr.Textbox(
-                        label="Must Include (comma-separated)",
-                        placeholder="e.g., glowing eyes, metallic armor",
-                        lines=1,
-                    )
-                    avoid_input = gr.Textbox(
-                        label="Avoid (comma-separated)",
-                        placeholder="e.g., cartoonish, low quality",
-                        lines=1,
-                    )
-                
-                with gr.Row():
-                    style_bias_input = gr.Textbox(
-                        label="Style Bias (comma-separated)",
-                        placeholder="e.g., Octane Render, cinematic lighting",
-                        lines=1,
-                    )
-                    palette_bias_input = gr.Textbox(
-                        label="Palette Bias (comma-separated)",
-                        placeholder="e.g., #FF6B00, deep purple, neon cyan",
-                        lines=1,
-                    )
+                    style_bias_input = gr.Textbox(label="Style Bias")
+                    palette_bias_input = gr.Textbox(label="Palette Bias")
             
-            manifest_btn = gr.Button("🚀 Generate Manifest", variant="primary")
+            manifest_btn = gr.Button("Generate Manifest", variant="primary")
             manifest_output = gr.JSON(label="Identity Manifest")
         
-        # ====================================================================
-        # STEP 2: Generate Visuals
-        # ====================================================================
-        with gr.Accordion("🖼️ Step 2: Place Subject in a Scene", open=True):
-            gr.Markdown("*Your subject will be placed in this scene. The manifest ensures consistent appearance across different scenes.*")
+        # Step 2
+        with gr.Accordion("Step 2: Generate", open=True):
+            gr.Markdown("*Place your subject in a scene.*")
             
             scene_input = gr.Textbox(
                 label="Scene Description",
-                placeholder="e.g., perched on a cherry blossom branch at sunset",
-                lines=2,
-                info="Where should your subject appear? Describe the setting, lighting, and mood.",
+                placeholder="e.g., in a neon city",
+                lines=2
             )
-            
-            with gr.Row():
-                gr.Examples(
-                    examples=[
-                        ["standing in a neon-lit Tokyo alley at night"],
-                        ["displayed on a minimalist white product backdrop"],
-                        ["posed heroically on a cliff at golden hour"],
-                    ],
-                    inputs=scene_input,
-                    label="Example Scenes",
-                )
             
             with gr.Row():
                 resolution_input = gr.Dropdown(
                     label="Resolution",
                     choices=["512x512", "768x768", "1024x1024"],
-                    value="512x512",  # Safe default for 6GB GPUs
-                    info="Lower = faster, less VRAM. 512x512 recommended for <8GB GPU"
+                    value="512x512"
                 )
-                num_images_input = gr.Slider(
-                    label="Number of Images",
-                    minimum=1,
-                    maximum=4,
-                    value=1,
-                    step=1,
-                )
-                steps_input = gr.Slider(
-                    label="Inference Steps",
-                    minimum=10,
-                    maximum=50,
-                    value=30,
-                    step=5,
-                )
+                num_images_input = gr.Slider(label="Count", minimum=1, maximum=4, value=1, step=1)
+                steps_input = gr.Slider(label="Steps", minimum=10, maximum=50, value=30, step=5)
             
             with gr.Row():
-                guidance_input = gr.Slider(
-                    label="Guidance Scale",
-                    minimum=1.0,
-                    maximum=15.0,
-                    value=7.0,
-                    step=0.5,
-                )
-                seed_input = gr.Number(
-                    label="Seed (-1 = random)",
-                    value=-1,
-                    precision=0,
-                )
+                guidance_input = gr.Slider(label="Guidance", minimum=1.0, maximum=15.0, value=7.0, step=0.5)
+                seed_input = gr.Number(label="Seed (-1 = random)", value=-1, precision=0)
             
-            generate_btn = gr.Button("🖼️ Generate Images", variant="primary")
-            gallery_output = gr.Gallery(
-                label="Generated Images (click to view full size)",
-                columns=2,  # Fewer columns = larger thumbnails
-                rows=1,
-                height=400,  # Fixed height so it doesn't overflow
-                object_fit="scale-down",  # Scale down to fit, don't crop
-                preview=True,  # Allow clicking to see full size
-            )
+            generate_btn = gr.Button("Generate Images", variant="primary")
+            gallery_output = gr.Gallery(label="Images", columns=2, height=400, preview=True)
         
-        # ====================================================================
-        # STEP 3: Evaluate Alignment
-        # ====================================================================
-        with gr.Accordion("📊 Step 3: Evaluate Alignment", open=True):
-            gr.Markdown("*Score how well the generated images match the identity manifest.*")
-            
-            score_btn = gr.Button("📊 Score Images", variant="primary")
-            scores_output = gr.JSON(label="Alignment Scores")
+        # Step 3
+        with gr.Accordion("Step 3: Evaluate", open=True):
+            score_btn = gr.Button("Score Images", variant="primary")
+            scores_output = gr.JSON(label="Scores")
         
-        # ====================================================================
-        # STEP 4: Refine Based on Feedback
-        # ====================================================================
-        with gr.Accordion("🔄 Step 4: Refine Manifest (Agent Loop)", open=True):
-            gr.Markdown("*The critic's feedback is used to improve the manifest. This closes the multi-agent loop.*")
+        # Step 4
+        with gr.Accordion("Step 4: Refine Manifest", open=False):
+            gr.Markdown("*Use critic feedback to improve the manifest.*")
             
-            refine_btn = gr.Button("🔄 Refine Manifest Based on Scores", variant="primary")
+            refine_btn = gr.Button("Refine Manifest", variant="primary")
             feedback_output = gr.Textbox(
-                label="Critic Feedback (sent to LLM)",
+                label="Critic Feedback",
                 lines=3,
                 interactive=False,
             )
             refined_manifest_output = gr.JSON(label="Refined Manifest")
             
             with gr.Row():
-                apply_btn = gr.Button("✅ Apply Refined Manifest", variant="secondary")
-                gr.Markdown("*Applies the refined manifest to Step 1, enabling re-generation with improvements.*")
+                apply_btn = gr.Button("Apply Refined Manifest", variant="secondary")
+        
+        # Step 5
+        with gr.Accordion("Step 5: Autonomous Coordinator", open=True):
+            gr.Markdown("""
+            ### Autonomous Mode
+            Delegate the refinement to the AI.
+            """)
+            
+            with gr.Row():
+                target_score_slider = gr.Slider(label="Target Score", minimum=0.6, maximum=0.99, value=0.85, step=0.01)
+                max_iter_slider = gr.Slider(label="Max Iterations", minimum=1, maximum=10, value=3, step=1)
+            
+            auto_run_btn = gr.Button("Start Autonomous Loop", variant="primary")
+            
+            auto_logs = gr.Textbox(label="Agent Log", lines=10, interactive=False)
+            auto_gallery = gr.Gallery(label="History", columns=3, height=300, object_fit="scale-down", preview=True)
+            
+            with gr.Row():
+                apply_auto_btn = gr.Button("Apply Final Manifest", variant="secondary")
         
         # ====================================================================
         # Event Handlers
@@ -535,6 +556,32 @@ def create_app() -> gr.Blocks:
             fn=lambda m: (m, m) if m else ({}, {}),
             inputs=[refined_manifest_output],
             outputs=[manifest_output, manifest_state],
+            js="window.scrollTo(0, 0);"
+        )
+        
+        # Step 5: Autonomous Loop
+        auto_run_btn.click(
+            fn=run_autonomous_loop,
+            inputs=[
+                manifest_state,
+                scene_input,
+                target_score_slider,
+                max_iter_slider,
+                resolution_input,
+                steps_input,
+                guidance_input,
+                seed_input
+            ],
+            outputs=[auto_gallery, auto_logs, refined_manifest_output],  # storing final in refined output for reuse
+            show_progress=False
+        )
+        
+        # Step 5b: Apply Final Auto Manifest
+        apply_auto_btn.click(
+            fn=lambda m: (m, m) if m else ({}, {}),
+            inputs=[refined_manifest_output],
+            outputs=[manifest_output, manifest_state],
+            js="window.scrollTo(0, 0);"
         )
         
         # ====================================================================
@@ -542,9 +589,6 @@ def create_app() -> gr.Blocks:
         # ====================================================================
         gr.Markdown("""
         ---
-        **Multi-Agent Architecture:** 
-        System A (LLM) → System B (Diffusion) → System C (CLIP) → **Loop back to System A**
-        
         *Generative AI Research Project - Brand Identity Creative Support Tool*
         """)
     
